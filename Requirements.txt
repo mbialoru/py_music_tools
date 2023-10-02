@@ -1,0 +1,4 @@
+mutagen
+get-cover-art
+pydub
+unidecode
