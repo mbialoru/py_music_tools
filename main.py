@@ -10,21 +10,30 @@ import re
 from functools import wraps
 from pathlib import Path
 from unidecode import unidecode
-from attrs import define, field
+from attrs import define, field, validators
 
 logger = logging.getLogger(__name__)
 
+def is_not_empty(string: str):
+    if string == "":
+        logger.warning("empty string received")
+        return "Unknown"
+    return string
+
 @define
 class MusicSong:
-    artist: str = "Unknown"
-    album: str = "Unknown"
-    title: str = "Unknown"
+    artist: str
+    album: str
+    title: str
 
     artist_ascii:str = field(init=false)
     album_ascii:str = field(init=false)
     title_ascii:str = field(init=false)
 
     def __attrs_post_init__(self):
+        self.artist = is_not_empty(self.artist)
+        self.album = is_not_empty(self.album)
+        self.title = is_not_empty(self.title)
         self.artist_ascii = unidecode_with_fallback(self.artist, "Empty")
         self.album_ascii = unidecode_with_fallback(self.album, "Empty")
         self.title_ascii = unidecode_with_fallback(self.title, "Empty")
@@ -100,52 +109,31 @@ def get_music_files_list(directory: Path):
                 logger.error(f"error when reading file {item}")
                 raise e
     logger.info(f"found {len(valid_files_list)} music files in {directory}")
-    
     return valid_files_list
 
 
-def get_key_with_fallback(file: mutagen.File, key: str, fallback = "Unknown"):
+def get_key_with_fallback(file: mutagen.File, key: str, fallback = ""):
     try:
         return file[key]
     except KeyError:
+        logger.error(f"key {key} not found")
+        logger.info(f"using fallback value {fallback}")
         return fallback
 
 
-def extract_metadata(file: Path):
-    album, artist, title = "", "", ""
-
+def create_musicsong_object(file: Path):
+    # for mp3 with id3 files we can use better API
     if isinstance(mutagen.File(file), mutagen.mp3.MP3):
         file = mutagen.mp3.MP3(file, ID3 = mutagen.easyid3.EasyID3)
     else:
-        logger.warning(f"{file} is not MP3")
+        logger.warning(f"{file} is not mp3 format file")
         file = mutagen.File(file)
 
-    artist = get_key_with_fallback(file, "artist")
-    album = get_key_with_fallback(file, "album")
-    title = get_key_with_fallback(file, "title")
+    artist = " ".join(get_key_with_fallback(file, "artist"))
+    album = " ".join(get_key_with_fallback(file, "album"))
+    title = " ".join(get_key_with_fallback(file, "title"))
 
-    if isinstance(artist, list):
-        if len(artist) > 1:
-            logger.warning(f"artist field is longer than one element")
-        artist = artist[0]
-    if not artist:
-        artist = "Unknown"
-
-    if isinstance(album, list):
-        if len(album) > 1:
-            logger.warning(f"album field is longer than one element")
-        album = album[0]
-    if not album:
-        album = "Unknown"
-
-    if isinstance(title, list):
-        if len(title) > 1:
-            logger.warning(f"title field is longer than one element")
-        title = title[0]
-    if not title:
-        title = "Unknown"
-
-    return (artist, album, title)
+    return MusicSong(artist, album, title)
 
 
 def build_data_dictionary(file_list):
