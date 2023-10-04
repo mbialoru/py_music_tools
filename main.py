@@ -14,38 +14,6 @@ from attrs import define, field, validators
 
 logger = logging.getLogger(__name__)
 
-def is_not_empty(string: str):
-    if string == "":
-        logger.warning("empty string received")
-        return "Unknown"
-    return string
-
-@define
-class MusicSong:
-    artist: str
-    album: str
-    title: str
-
-    artist_ascii:str = field(init=false)
-    album_ascii:str = field(init=false)
-    title_ascii:str = field(init=false)
-
-    def __attrs_post_init__(self):
-        self.artist = is_not_empty(self.artist)
-        self.album = is_not_empty(self.album)
-        self.title = is_not_empty(self.title)
-        self.artist_ascii = unidecode_with_fallback(self.artist, "Empty")
-        self.album_ascii = unidecode_with_fallback(self.album, "Empty")
-        self.title_ascii = unidecode_with_fallback(self.title, "Empty")
-
-    @property
-    def path(self) -> Path:
-        result = Path()
-        result / to_snake_case(self.artist_ascii)
-        result / to_snake_case(self.album_ascii)
-        result / to_snake_case(self.title)
-        return result
-
 
 def setup_logger(debug: bool = False):
     log_format = "%(levelname)-8s %(message)s"
@@ -67,13 +35,20 @@ def setup_argv() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def unidecode_with_fallback(string: str, fallback: str):
-    result = unidecode(string)
-    if not result:
-        logger.warning(f"unidecode returned empty string for {string}")
-        logger.info(f"using fallback value {fallback}")
-        return fallback
-    return result
+def chrono(method):
+    """Report execution time in miliseconds of wrapped function."""
+    @wraps(method)
+    def wrapped(*args, **kwargs):
+        startTime = time.time_ns()
+        result = method(*args, **kwargs)
+        finishTime = round((time.time_ns() - startTime) / 1000000, 8)
+        logger.debug(f"CHRONO {method.__name__}() {finishTime} ms")
+        return result
+    return wrapped
+
+
+def id3_tag_to_str(tag: list) -> str:
+    return " ".join(tag)
 
 
 def to_snake_case(string: str):
@@ -81,16 +56,13 @@ def to_snake_case(string: str):
     return re.sub("__+", "_", re.sub(r"(?<=[a-z])(?=[A-Z])|[^a-zA-Z0-9]", "_", string).strip("_").lower())
 
 
-def chrono(method):
-    """Report execution time in miliseconds of wrapped function."""
-    @wraps(method)
-    def wrapped(*args, **kwarg/s):
-        startTime = time.time_ns()
-        result = method(*args, **kwargs)
-        finishTime = round((time.time_ns() - startTime) / 1000000, 8)
-        logger.debug(f"CHRONO {method.__name__}() {finishTime} ms")
-        return result
-    return wrapped
+def get_key_with_fallback(file: mutagen.File, key: str, fallback = ""):
+    try:
+        return file[key]
+    except KeyError:
+        logger.error(f"key {key} not found")
+        logger.info(f"using fallback value {fallback}")
+        return fallback
 
 
 @chrono
@@ -112,28 +84,25 @@ def get_music_files_list(directory: Path):
     return valid_files_list
 
 
-def get_key_with_fallback(file: mutagen.File, key: str, fallback = ""):
-    try:
-        return file[key]
-    except KeyError:
-        logger.error(f"key {key} not found")
-        logger.info(f"using fallback value {fallback}")
-        return fallback
-
-
 def create_musicsong_object(file: Path):
     # for mp3 with id3 files we can use better API
     if isinstance(mutagen.File(file), mutagen.mp3.MP3):
-        file = mutagen.mp3.MP3(file, ID3 = mutagen.easyid3.EasyID3)
+        audio = mutagen.mp3.MP3(file, ID3 = mutagen.easyid3.EasyID3)
     else:
         logger.warning(f"{file} is not mp3 format file")
-        file = mutagen.File(file)
+        audio = mutagen.File(file)
+    return MusicSong(file, get_key_with_fallback(audio, "artist"), get_key_with_fallback(audio, "album"), get_key_with_fallback(audio, "title"))
 
-    artist = " ".join(get_key_with_fallback(file, "artist"))
-    album = " ".join(get_key_with_fallback(file, "album"))
-    title = " ".join(get_key_with_fallback(file, "title"))
+def get_statistics(musicsong_object_list):
+    artist_count = 0
+    album_count = 0
+    title_count = 0
 
-    return MusicSong(artist, album, title)
+    unknown_artists = 0
+    unknown_albums = 0
+    unknown_titles = 0
+
+    empty_artists = 0
 
 
 def build_data_dictionary(file_list):
@@ -205,11 +174,74 @@ def move_files_to_folders(data_dictionary: dict, target_dir: Path):
                 logger.debug(f"moving {file.name} to {file_dir}")
                 file.rename(file_dir)
 
+@define
+class MusicSong:
+    file_path: Path = field()
+
+    artist: str = field(converter=id3_tag_to_str)
+    album: str = field(converter=id3_tag_to_str)
+    title: str = field(converter=id3_tag_to_str)
+
+    artist_ascii:str = field(init=False)
+    album_ascii:str = field(init=False)
+    title_ascii:str = field(init=False)
+
+    @artist.default
+    def _artist_unknown(self):
+        if not self.artist or self.artist == "":
+            logger.warning("empty artist, setting to Unknown")
+            return "Unknown"
+
+    @album.default
+    def _album_unknown(self):
+        if not self.album or self.album == "":
+            logger.warning("empty album, setting to Unknown")
+            return "Unknown"
+
+    @title.default
+    def _title_default(self):
+        if not self.title or self.title == "":
+            logger.warning("empty title, setting to Unknown")
+            return "Unknown"
+    
+    @artist_ascii.default
+    def _artist_ascii_default(self):
+        if not (artist_ascii := unidecode(self.artist)):
+            logger.warning("unidecode returned empty string")
+            return "empty"
+        return artist_ascii
+
+    @album_ascii.default
+    def _album_ascii_default(self):
+        if not (album_ascii := unidecode(self.album)):
+            logger.warning("unidecode returned empty string")
+            return "empty"
+        return album_ascii
+
+    @title_ascii.default
+    def _title_ascii_default(self):
+        if not (title_ascii := unidecode(self.title)):
+            logger.warning("unidecode returned empty string")
+            return "empty"
+        return title_ascii
+
+    @property
+    def path(self) -> Path:
+        result = Path('.')
+        result /= to_snake_case(self.artist_ascii)
+        result /= to_snake_case(self.album_ascii)
+        result /= to_snake_case(self.title_ascii)
+        return result
+
+
 @chrono
 def main(argv: argparse.Namespace):
     music_file_paths = get_music_files_list(argv.scan_dir)
-    data_dictionary = build_data_dictionary(music_file_paths)
-    move_files_to_folders(data_dictionary, argv.target_dir)
+    x = create_musicsong_object(music_file_paths[0])
+    print(x)
+    print(x.path)
+    # data_dictionary = build_data_dictionary(music_file_paths)
+    # move_files_to_folders(data_dictionary, argv.target_dir)
 
 if __name__ == "__main__":
     argv = setup_argv()
