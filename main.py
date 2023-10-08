@@ -8,6 +8,7 @@ import glob
 import re
 
 from functools import wraps
+from collections import namedtuple
 from pathlib import Path
 from unidecode import unidecode
 from attrs import define, field, validators
@@ -89,70 +90,49 @@ def create_musicsong_object(file: Path):
     if isinstance(mutagen.File(file), mutagen.mp3.MP3):
         audio = mutagen.mp3.MP3(file, ID3 = mutagen.easyid3.EasyID3)
     else:
-        logger.warning(f"{file} is not mp3 format file")
+        logger.info(f"{file} is not a mp3 format file")
         audio = mutagen.File(file)
     return MusicSong(file, get_key_with_fallback(audio, "artist"), get_key_with_fallback(audio, "album"), get_key_with_fallback(audio, "title"))
 
+
 def get_statistics(musicsong_object_list):
-    artist_count = 0
-    album_count = 0
-    title_count = 0
+    """ yes, this function does have a side effect - I know """
+    artist_list = []
+    album_list = []
+    title_list = []
 
-    unknown_artists = 0
-    unknown_albums = 0
-    unknown_titles = 0
+    stats = Stats()
 
-    empty_artists = 0
-
-
-def build_data_dictionary(file_list):
-    data = {}
-
-    artist_count = 0
-    album_count = 0
-    title_count = 0
-
-    artist_unknown_count = 0
-    album_unknown_count = 0
-    title_unknown_count = 0
-
-    for file in file_list:
-        artist, album, title = extract_metadata(file)
-
-        if artist not in data.keys():
-            logger.debug(f"new artist {artist}")
-            data[artist] = {}
-            artist_count += 1
+    for item in musicsong_object_list:
+        if item.artist == "Unknown":
+            stats.unknown_artists += 1
+        elif item.artist not in artist_list:
+            artist_list.append(item.artist)
+        if item.artist_ascii == "Empty":
+            stats.empty_artists += 1
         
-        if album not in data[artist].keys():
-            logger.debug(f"new album {album} of {artist}")
-            data[artist][album] = []
-            album_count += 1
+        if item.album == "Unknown":
+            stat.sunknown_albums += 1
+        elif item.album not in album_list:
+            album_list.append(item.album)
+        if item.album_ascii == "Empty":
+            stats.empty_albums += 1
+        
+        if item.title == "Unknown":
+            stats.unknown_titles += 1
+            item.title += str(unknown_titles) # prevent overwriting unknown titles
+        elif item.title not in title_list:
+            title_list.append(item.title)
+        if item.title_ascii == "Empty":
+            stats.empty_titles += 1
+            item.title += str(empty_titles) # prevent overwriting empty asciified titles
 
-        if title not in data[artist][album]:
-            logger.debug(f"adding {file}")
-            data[artist][album].append((title, file))
-            title_count += 1
+    stats.artists = len(artist_list)
+    stats.albums = len(album_list)
+    stats.titles = len(title_list)
 
-        if artist == "Unknown":
-            logger.debug(f"unknown artist for {file}")
-            artist_unknown_count += 1
-        if album == "Unknown":
-            logger.debug(f"unknown album for {file}")
-            album_unknown_count += 1
-        if title == "Unknown":
-            logger.debug(f"unknown title for {file}")
-            title_unknown_count += 1
+    return stats
 
-    logger.info(f"{artist_count} artists")
-    logger.info(f"{album_count} albums")
-    logger.info(f"{title_count} titles")
-
-    logger.info(f"{artist_unknown_count} unknown artists")
-    logger.info(f"{album_unknown_count} unknown albums")
-    logger.info(f"{title_unknown_count} unknown titles")
-
-    return data
 
 def move_files_to_folders(data_dictionary: dict, target_dir: Path):
     for artist in data_dictionary.keys():
@@ -173,6 +153,33 @@ def move_files_to_folders(data_dictionary: dict, target_dir: Path):
                 file_dir = album_dir / (to_snake_case(title) + str(file.suffix))
                 logger.debug(f"moving {file.name} to {file_dir}")
                 file.rename(file_dir)
+
+
+def build_directory_tree(musicsong_object_list, target_dir):
+    artist_dirs = 0
+    album_dirs = 0
+
+    for item in music_file_paths:
+        artist_dir = target_dir / to_snake_case(item.artist_ascii)
+        album_dir = artist_dir / to_snake_case(item.album_ascii)
+        if not artist_dir.exists():
+            logger.debug(f"creating artist directory {to_snake_case(item.artist_ascii)}")
+            artist_dir.mkdir()
+            artist_dirs += 1
+        if not album_dir.exists():
+            logger.debug(f"creating album directory {to_snake_case(item.album_ascii)}")
+            album_dir.mkdir()
+            album_dirs += 1
+
+    logger.debug(f"created {artist_dirs} artist directories")
+    logger.debug(f"created {album_dirs} album directories")
+    logger.debug(f"created {artist_dirs + album_dirs} total directories")
+
+
+Stats = namedtuple("Stats", ["artists", "albums", "titles", "unknown_artists", "unknown_albums",
+                    "unknown_titles", "empty_artists", "empty_albums", "empty_titles"],
+                    defaults=[0,0,0,0,0,0,0,0,0])
+
 
 @define
 class MusicSong:
@@ -208,21 +215,21 @@ class MusicSong:
     def _artist_ascii_default(self):
         if not (artist_ascii := unidecode(self.artist)):
             logger.warning("unidecode returned empty string")
-            return "empty"
+            return "Empty"
         return artist_ascii
 
     @album_ascii.default
     def _album_ascii_default(self):
         if not (album_ascii := unidecode(self.album)):
             logger.warning("unidecode returned empty string")
-            return "empty"
+            return "Empty"
         return album_ascii
 
     @title_ascii.default
     def _title_ascii_default(self):
         if not (title_ascii := unidecode(self.title)):
             logger.warning("unidecode returned empty string")
-            return "empty"
+            return "Empty"
         return title_ascii
 
     @property
@@ -234,12 +241,97 @@ class MusicSong:
         return result
 
 
+# shamelessly stolen from https://stackoverflow.com/questions/9727673/list-directory-tree-structure-in-python
+class DisplayablePath(object):
+    display_filename_prefix_middle = '├──'
+    display_filename_prefix_last = '└──'
+    display_parent_prefix_middle = '    '
+    display_parent_prefix_last = '│   '
+
+    def __init__(self, path, parent_path, is_last):
+        self.path = Path(str(path))
+        self.parent = parent_path
+        self.is_last = is_last
+        if self.parent:
+            self.depth = self.parent.depth + 1
+        else:
+            self.depth = 0
+
+    @property
+    def displayname(self):
+        if self.path.is_dir():
+            return self.path.name + '/'
+        return self.path.name
+
+    @classmethod
+    def make_tree(cls, root, parent=None, is_last=False, criteria=None):
+        root = Path(str(root))
+        criteria = criteria or cls._default_criteria
+
+        displayable_root = cls(root, parent, is_last)
+        yield displayable_root
+
+        children = sorted(list(path
+                               for path in root.iterdir()
+                               if criteria(path)),
+                          key=lambda s: str(s).lower())
+        count = 1
+        for path in children:
+            is_last = count == len(children)
+            if path.is_dir():
+                yield from cls.make_tree(path,
+                                         parent=displayable_root,
+                                         is_last=is_last,
+                                         criteria=criteria)
+            else:
+                yield cls(path, displayable_root, is_last)
+            count += 1
+
+    @classmethod
+    def _default_criteria(cls, path):
+        return True
+
+    @property
+    def displayname(self):
+        if self.path.is_dir():
+            return self.path.name + '/'
+        return self.path.name
+
+    def displayable(self):
+        if self.parent is None:
+            return self.displayname
+
+        _filename_prefix = (self.display_filename_prefix_last
+                            if self.is_last
+                            else self.display_filename_prefix_middle)
+
+        parts = ['{!s} {!s}'.format(_filename_prefix,
+                                    self.displayname)]
+
+        parent = self.parent
+        while parent and parent.parent is not None:
+            parts.append(self.display_parent_prefix_middle
+                         if parent.is_last
+                         else self.display_parent_prefix_last)
+            parent = parent.parent
+
+        return ''.join(reversed(parts))
+
 @chrono
 def main(argv: argparse.Namespace):
     music_file_paths = get_music_files_list(argv.scan_dir)
-    x = create_musicsong_object(music_file_paths[0])
-    print(x)
-    print(x.path)
+    musicsong_object_list = [create_musicsong_object(path) for path in music_file_paths]
+    stats = get_statistics(musicsong_object_list)
+    logger.info(f"Artists: {stats.artists}")
+    logger.info(f"Albums: {stats.albums}")
+    logger.info(f"Titles: {stats.titles}")
+    build_directory_tree(musicsong_object_list, argv.target_dir)
+
+    logger.debug(f"directory tree")
+    tree = DisplayablePath.make_tree(argv.target_dir)
+    for item in tree:
+        logger.debug(item.displayable())
+
     # data_dictionary = build_data_dictionary(music_file_paths)
     # move_files_to_folders(data_dictionary, argv.target_dir)
 
