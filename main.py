@@ -134,32 +134,21 @@ def get_statistics(musicsong_object_list):
     return stats
 
 
-def move_files_to_folders(data_dictionary: dict, target_dir: Path):
-    for artist in data_dictionary.keys():
-        artist_dir = target_dir / to_snake_case(artist)
-        if not artist_dir.exists():
-            logger.debug(f"creating artist directory {artist_dir}")
-            artist_dir.mkdir()
-        for album in data_dictionary[artist]:
-            album_dir = artist_dir / to_snake_case(album)
-            if not album_dir.exists():
-                logger.debug(f"creating album directory {album_dir}")
-                album_dir.mkdir()
-            unknown_titles = 0
-            for title, file in data_dictionary[artist][album]:
-                if title == "Unknown":
-                    title = title + str(unknown_titles)
-                    unknown_titles += 1
-                file_dir = album_dir / (to_snake_case(title) + str(file.suffix))
-                logger.debug(f"moving {file.name} to {file_dir}")
-                file.rename(file_dir)
+def move_files_to_folders(musicsong_object_list, target_dir: Path):
+    for item in musicsong_object_list:
+        if not (target_dir / item.path).exists():
+            logger.debug(f"moving {item.file_path} to {target_dir / item.path}")
+            item.file_path.rename(target_dir/item.path)
+        else:
+            logger.warning(f"conflicting filenames, skipping")
+            logger.debug(f"{item.path}")
 
 
 def build_directory_tree(musicsong_object_list, target_dir):
     artist_dirs = 0
     album_dirs = 0
 
-    for item in music_file_paths:
+    for item in musicsong_object_list:
         artist_dir = target_dir / to_snake_case(item.artist_ascii)
         album_dir = artist_dir / to_snake_case(item.album_ascii)
         if not artist_dir.exists():
@@ -176,10 +165,19 @@ def build_directory_tree(musicsong_object_list, target_dir):
     logger.debug(f"created {artist_dirs + album_dirs} total directories")
 
 
-Stats = namedtuple("Stats", ["artists", "albums", "titles", "unknown_artists", "unknown_albums",
-                    "unknown_titles", "empty_artists", "empty_albums", "empty_titles"],
-                    defaults=[0,0,0,0,0,0,0,0,0])
+@define
+class Stats:
+    artists: int = 0
+    albums: int = 0
+    titles: int = 0
 
+    unknown_artists = 0
+    unknown_albums = 0
+    unknown_titles = 0
+
+    empty_artists = 0
+    empty_albums = 0
+    empty_titles = 0
 
 @define
 class MusicSong:
@@ -237,7 +235,7 @@ class MusicSong:
         result = Path('.')
         result /= to_snake_case(self.artist_ascii)
         result /= to_snake_case(self.album_ascii)
-        result /= to_snake_case(self.title_ascii)
+        result /= (to_snake_case(self.title_ascii) + self.file_path.suffix)
         return result
 
 
@@ -332,8 +330,7 @@ def main(argv: argparse.Namespace):
     for item in tree:
         logger.debug(item.displayable())
 
-    # data_dictionary = build_data_dictionary(music_file_paths)
-    # move_files_to_folders(data_dictionary, argv.target_dir)
+    move_files_to_folders(musicsong_object_list, argv.target_dir)
 
 if __name__ == "__main__":
     argv = setup_argv()
